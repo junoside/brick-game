@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>SHE IsuueLetter 벽돌깨기</title>
+<style>
+    body { text-align:center; font-family:'맑은 고딕', Arial; }
+    canvas { background:#f7f7f7; display:block; margin:0 auto; }
+    #startBtn, #retryBtn {
+        padding:10px 0;
+        margin:4px 6px;
+        cursor:pointer;
+        font-size:16px;
+        width:140px;
+    }
+</style>
+</head>
+
+<body>
+<h2 style="font-size:28px; margin-bottom:6px;">🧱 SHE IsuueLetter 벽돌깨기</h2>
+
+<!-- 점수 안내 문구 -->
+<p style="font-size:18px; margin-top:0; margin-bottom:8px;">
+    <strong style="padding:6px 14px; border-radius:18px; background:#ffe9b3; border:2px solid #e0a800; color:#865100; font-size:19px;">
+        🎯 <span style="font-weight:900; color:#d35400;">10~12월 SHE 주제 벽돌: 10점</span>
+        / 기타 안전·보건 단어: <span style="font-weight:700;">2점</span>
+    </strong>
+</p>
+
+<!-- 10점 황금벽돌 안내 문구 -->
+<p style="font-size:17px; margin:0 0 10px 0;">
+    <strong style="color:#b4690e; font-weight:700;">
+        ⭐ 10점 황금벽돌을 노려보세요!
+    </strong>
+</p>
+
+<button id="startBtn">START</button>
+<button id="retryBtn" style="display:none;">다시하기</button>
+
+<br/>
+<!-- 캔버스 크기 -->
+<canvas id="gameCanvas" width="1055" height="620"></canvas>
+
+<script>
+// =======================
+// 기본 설정
+// =======================
+var canvas = document.getElementById("gameCanvas");
+var ctx = canvas.getContext("2d");
+
+var ballRadius = 8;
+var x = canvas.width/2;
+var y = canvas.height-40;
+
+// 공 속도(조금 느리게)
+var speed = 3.7;
+var dx = speed * Math.cos(Math.PI/3);
+var dy = -speed * Math.sin(Math.PI/3);
+
+var paddleWidth = 120;
+var paddleHeight = 10;
+var paddleX = (canvas.width - paddleWidth) / 2;
+
+var paddleSpeed = 8;
+
+var rightPressed = false;
+var leftPressed = false;
+
+var gameRunning = false;
+var gameEnded = false;
+var showGuide = true;
+
+// 🔹 기회 15번 (표시 15 → 0, 내부는 14까지 허용)
+var totalChancesDisplay = 15;   // 화면 표시용
+var maxChances = 14;            // usedChances > 14 이면 종료
+var usedChances = 0;
+
+var score = 0;
+var hasHitBrick = false;
+
+var arrowText = "";
+var arrowTimer = 0;
+var arrowX = 0;
+var arrowY = 0;
+var lastHitZone = null;
+
+var showGameOver = false;
+var finalScore = 0;
+
+// ========================
+// 고정 시드 랜덤 (항상 동일 배치)
+// ========================
+var seed = 123456789;
+function rand() {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+}
+
+// ========================
+// 10점 단어 (10~12월 SHE 주제 + 추가)
+// ========================
+var highWords = [
+    "컬러안전",
+    "노동안전 종합대책",
+    "한화63시티 안전보건시스템",
+    "사다리N안전모",
+    "뇌졸증",
+    "야외 질식사고",
+    "한랭질환",
+    "성탄절 화재",
+    "TBM 실시"          // 🔹 새로 추가된 황금벽돌
+];
+
+// ========================
+// 기타 안전보건 단어 (2점)
+// 🔹 "TBM 교육" 제거, "수직사다리" 없음
+// ========================
+var pool = [
+    "전열기구 점검","감전사고 예방","추락재해 예방","밀폐공간 작업",
+    "호흡보호구","산소농도 측정","중대산업재해","근골격계질환",
+    "PPE 착용","소방안전관리","위험성평가",
+    "작업허가서","응급처치","환기설비 가동","정기안전교육",
+    "근골격계 부담작업","화학물질 취급","폭발위험 장소","보호장갑 착용",
+    "안전난간 설치","비계 점검","개구부 추락방지","산업재해 통계"
+];
+
+// ========================
+// 벽돌 설정
+// ========================
+var rows = 5;
+var cols = 10;
+var brickW = 95, brickH = 34;
+var brickPad = 10;
+var brickOffsetTop = 30;    // 벽돌 시작 Y (조금 위)
+var brickOffsetLeft = 15;
+
+var bricks = [];
+var LABEL_COUNT = 30;
+var labels = [];
+var i;
+
+// highWords 먼저 채우기
+for (i = 0; i < highWords.length; i++) {
+    labels.push(highWords[i]);
+}
+// 나머지 LABEL_COUNT까지 pool에서 채우기
+for (i = 0; i < pool.length && labels.length < LABEL_COUNT; i++) {
+    labels.push(pool[i]);
+}
+
+// 위치 교환 도우미 (필요 시 사용)
+function swapLabel(a, b) {
+    var idxA = -1;
+    var idxB = -1;
+    for (var k = 0; k < labels.length; k++) {
+        if (labels[k] === a) idxA = k;
+        if (labels[k] === b) idxB = k;
+    }
+    if (idxA !== -1 && idxB !== -1) {
+        var tmp = labels[idxA];
+        labels[idxA] = labels[idxB];
+        labels[idxB] = tmp;
+    }
+}
+
+// 예전 분산용 스왑 일부 유지 (수직사다리는 제거됨)
+swapLabel("컬러안전", "안전난간 설치");
+swapLabel("사다리N안전모", "산업재해 통계");
+swapLabel("뇌졸증", "환기설비 가동");
+swapLabel("노동안전 종합대책", "산업재해 통계");
+
+// 텍스트 벽돌 + 빈 벽돌 데이터 만들기
+var totalBricks = rows * cols;  // 50
+var brickData = [];
+
+// 텍스트 벽돌 30개
+for (i = 0; i < LABEL_COUNT; i++) {
+    var w = labels[i];
+    var isHigh = (highWords.indexOf(w) !== -1);
+    brickData.push({
+        label: w,
+        score: isHigh ? 10 : 2,
+        isHigh: isHigh
+    });
+}
+// 빈 벽돌 20개
+while (brickData.length < totalBricks) {
+    brickData.push({
+        label: "",
+        score: 0,
+        isHigh: false
+    });
+}
+
+// 시드 고정 셔플 (항상 동일)
+function shuffle(array){
+    for (var j = array.length - 1; j > 0; j--){
+        var r = Math.floor(rand() * (j + 1));
+        var temp = array[j];
+        array[j] = array[r];
+        array[r] = temp;
+    }
+}
+shuffle(brickData);
+
+// bricks 2차원 배열화
+var idxData = 0;
+for (var c = 0; c < cols; c++){
+    bricks[c] = [];
+    for (var r = 0; r < rows; r++){
+        var bd = brickData[idxData++];
+        bricks[c][r] = {
+            x:0, y:0,
+            status:1,
+            label: bd.label,
+            score: bd.score,
+            isHigh: bd.isHigh
+        };
+    }
+}
+
+// ========================
+// 특정 단어를 오른쪽에 배치 (성탄절 화재, 노동안전 종합대책, TBM 실시)
+// ========================
+function swapBrickContent(c1, r1, c2, r2) {
+    var b1 = bricks[c1][r1];
+    var b2 = bricks[c2][r2];
+
+    var tmpLabel = b1.label;
+    var tmpScore = b1.score;
+    var tmpHigh  = b1.isHigh;
+
+    b1.label = b2.label;
+    b1.score = b2.score;
+    b1.isHigh = b2.isHigh;
+
+    b2.label = tmpLabel;
+    b2.score = tmpScore;
+    b2.isHigh = tmpHigh;
+}
+
+function moveBrickLabelTo(targetLabel, destC, destR) {
+    var found = null;
+    for (var c = 0; c < cols; c++) {
+        for (var r = 0; r < rows; r++) {
+            if (bricks[c][r].label === targetLabel) {
+                found = {c:c, r:r};
+                break;
+            }
+        }
+        if (found) break;
+    }
+    if (!found) return;
+    if (found.c === destC && found.r === destR) return;
+
+    swapBrickContent(found.c, found.r, destC, destR);
+}
+
+// 오른쪽 끝 열(9번 인덱스)에 세 단어 배치
+moveBrickLabelTo("성탄절 화재",      7, 0);
+moveBrickLabelTo("노동안전 종합대책", 8, 2);
+moveBrickLabelTo("TBM 실시",         9, 1);
+
+// ========================
+// 버튼 제어
+// ========================
+var startBtn = document.getElementById("startBtn");
+var retryBtn = document.getElementById("retryBtn");
+
+startBtn.onclick = function(){
+    if (gameEnded) {
+        location.reload();
+        return;
+    }
+    gameRunning = true;
+    showGuide = false;
+};
+
+retryBtn.onclick = function(){
+    location.reload();
+};
+
+// ========================
+// 키 이벤트
+// ========================
+document.addEventListener("keydown", function(e){
+    if (e.keyCode === 39) rightPressed = true;
+    else if (e.keyCode === 37) leftPressed = true;
+});
+document.addEventListener("keyup", function(e){
+    if (e.keyCode === 39) rightPressed = false;
+    else if (e.keyCode === 37) leftPressed = false;
+});
+
+// ========================
+// 2줄로 표기할 단어 매핑
+// ========================
+var multiLineMap = {
+    "한화63시티 안전보건시스템": ["한화63시티", "안전보건시스템"],
+    "노동안전 종합대책": ["노동안전", "종합대책"],
+    "근골격계 부담작업": ["근골격계", "부담작업"]
+};
+
+function drawLabel(text, x, y, width){
+    if (!text) return;
+
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    if (multiLineMap[text]) {
+        var lines = multiLineMap[text];
+        ctx.font = "bold 15px '맑은 고딕'";
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(0,0,0,0.85)";
+        ctx.fillStyle = "#ffffff";
+
+        ctx.strokeText(lines[0], x, y - 8);
+        ctx.fillText(lines[0], x, y - 8);
+
+        ctx.strokeText(lines[1], x, y + 8);
+        ctx.fillText(lines[1], x, y + 8);
+    } else {
+        drawFitText(text, x, y, width);
+    }
+}
+
+function drawFitText(txt, x, y, maxWidth){
+    var size = 17;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.85)";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold " + size + "px '맑은 고딕'";
+
+    while (ctx.measureText(txt).width > maxWidth && size > 11){
+        size--;
+        ctx.font = "bold " + size + "px '맑은 고딕'";
+    }
+    ctx.strokeText(txt, x, y);
+    ctx.fillText(txt, x, y);
+}
+
+// ========================
+// 벽돌 모양 (황금/일반)
+// ========================
+function drawBrickShape(bx, by, bw, bh, isHigh){
+    if (isHigh) {
+        var g = ctx.createLinearGradient(bx, by, bx, by + bh);
+        g.addColorStop(0, "#ffe58f");
+        g.addColorStop(0.5, "#ffc107");
+        g.addColorStop(1, "#ff9800");
+        ctx.fillStyle = g;
+        ctx.fillRect(bx, by, bw, bh);
+
+        ctx.strokeStyle = "#b26a00";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+
+        ctx.strokeStyle = "rgba(255,255,255,0.8)";
+        ctx.beginPath();
+        ctx.moveTo(bx + 2, by + 2);
+        ctx.lineTo(bx + bw - 2, by + 2);
+        ctx.stroke();
+
+    } else {
+        var grad = ctx.createLinearGradient(bx, by, bx, by + bh);
+        grad.addColorStop(0, "#d35400");
+        grad.addColorStop(0.5, "#b03a2e");
+        grad.addColorStop(1, "#7b241c");
+        ctx.fillStyle = grad;
+        ctx.fillRect(bx, by, bw, bh);
+
+        ctx.strokeStyle = "#5b1a12";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+    }
+}
+
+// ========================
+// 패들 화살표
+// ========================
+function updateArrowAtPaddle(hitPos, hitX){
+    if (!hasHitBrick) return;
+
+    if (hitPos < 1/3) {
+        arrowText = "↖";
+        lastHitZone = "left";
+    } else if (hitPos > 2/3) {
+        arrowText = "↗";
+        lastHitZone = "right";
+    } else {
+        arrowText = "↑";
+        lastHitZone = "center";
+    }
+
+    arrowX = hitX;
+    var paddleY = canvas.height - paddleHeight - 10;
+    arrowY = paddleY - 22;
+
+    arrowTimer = 20;
+}
+
+// ========================
+// 벽돌 충돌
+// ========================
+function collisionBricks(){
+    if (!gameRunning) return;
+
+    for (var c=0; c<cols; c++){
+        for (var r=0; r<rows; r++){
+            var b = bricks[c][r];
+            if (b.status === 1){
+                if (x > b.x && x < b.x + brickW &&
+                    y > b.y && y < b.y + brickH){
+
+                    dy = -dy;
+                    b.status = 0;
+
+                    if (b.score > 0) {
+                        score += b.score;
+                    }
+                    hasHitBrick = true;
+                }
+            }
+        }
+    }
+}
+
+// ========================
+// 게임 종료
+// ========================
+function endGame(){
+    if (gameEnded) return;
+    gameEnded = true;
+    gameRunning = false;
+    finalScore = score;
+    showGameOver = true;
+    retryBtn.style.display = "inline-block";
+}
+
+// ========================
+// 메인 렌더링
+// ========================
+function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    // 상단 회색 바
+    ctx.fillStyle = "#dddddd";
+    ctx.fillRect(0, 0, canvas.width, brickOffsetTop - 10);
+
+    // 벽돌
+    for (var c=0; c<cols; c++){
+        for (var r=0; r<rows; r++){
+            var b = bricks[c][r];
+            if (b.status === 1){
+                var bx = c*(brickW+brickPad) + brickOffsetLeft;
+                var by = r*(brickH+brickPad) + brickOffsetTop;
+                b.x = bx;
+                b.y = by;
+
+                drawBrickShape(bx, by, brickW, brickH, b.isHigh);
+                drawLabel(b.label, bx + brickW/2, by + brickH/2, brickW - 10);
+            }
+        }
+    }
+
+    // 공
+    ctx.beginPath();
+    ctx.arc(x,y,ballRadius,0,Math.PI*2);
+    ctx.fillStyle="#ffcc00";
+    ctx.fill();
+    ctx.closePath();
+
+    // 패들 3등분
+    var paddleY = canvas.height - paddleHeight - 10;
+    var segW = paddleWidth / 3;
+
+    for (var iSeg = 0; iSeg < 3; iSeg++) {
+        var segX = paddleX + iSeg * segW;
+        var baseColor = "#333";
+
+        if (lastHitZone === "left" && iSeg === 0) baseColor = "#555";
+        if (lastHitZone === "center" && iSeg === 1) baseColor = "#555";
+        if (lastHitZone === "right" && iSeg === 2) baseColor = "#555";
+
+        ctx.fillStyle = baseColor;
+        ctx.fillRect(segX, paddleY, segW, paddleHeight);
+    }
+
+    ctx.strokeStyle = "#888";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(paddleX + segW, paddleY);
+    ctx.lineTo(paddleX + segW, paddleY + paddleHeight);
+    ctx.moveTo(paddleX + 2*segW, paddleY);
+    ctx.lineTo(paddleX + 2*segW, paddleY + paddleHeight);
+    ctx.stroke();
+
+    // 점수 & 남은횟수
+    ctx.fillStyle="#000";
+    ctx.font="18px 맑은 고딕";
+    ctx.textAlign="left";
+    ctx.fillText("점수: "+score+"점",10,16);
+
+    ctx.textAlign="right";
+    var remain = totalChancesDisplay - usedChances;
+    if (remain < 0) remain = 0;
+    ctx.fillText("남은 횟수: " + remain, canvas.width-10, 16);
+
+    // 패들 위 화살표
+    if (arrowTimer > 0 && hasHitBrick && !showGameOver){
+        ctx.font = "30px Arial";
+        ctx.fillStyle = "red";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(arrowText, arrowX, arrowY);
+        arrowTimer--;
+    }
+
+    collisionBricks();
+
+    // 시작 안내 박스
+    if (showGuide && !showGameOver){
+        var boxW = 520;
+        var boxH = 90;
+        var boxX = (canvas.width - boxW)/2;
+        var boxY = canvas.height/2 - boxH/2;
+
+        ctx.fillStyle = "rgba(255,255,255,0.95)";
+        ctx.strokeStyle = "#cccccc";
+        ctx.lineWidth = 1.5;
+        ctx.fillRect(boxX, boxY, boxW, boxH);
+        ctx.strokeRect(boxX, boxY, boxW, boxH);
+
+        ctx.fillStyle = "#444";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.font = "22px '맑은 고딕'";
+        ctx.fillText("START를 눌러주세요", canvas.width/2, boxY + 30);
+        ctx.font = "18px '맑은 고딕'";
+        ctx.fillText("키보드의 화살표로 패들을 움직여주세요", canvas.width/2, boxY + 60);
+    }
+
+    // 게임오버 화면
+    if (showGameOver){
+        ctx.fillStyle = "rgba(0,0,0,0.6)";
+        ctx.fillRect(0,0,canvas.width,canvas.height);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.font = "30px '맑은 고딕'";
+        ctx.fillText("최종 점수: " + finalScore + "점", canvas.width/2, canvas.height/2 - 10);
+
+        ctx.font = "18px '맑은 고딕'";
+        ctx.fillText("위에 '다시하기' 버튼을 눌러주세요.", canvas.width/2, canvas.height/2 + 25);
+    }
+
+    if (gameRunning && !gameEnded){
+
+        x += dx;
+        y += dy;
+
+        // 좌우 벽
+        if (x + dx > canvas.width-ballRadius || x + dx < ballRadius){
+            dx = -dx;
+        }
+
+        // 위쪽 벽
+        if (y + dy < ballRadius){
+            dy = -dy;
+        }
+
+        // 바닥(패들 영역)
+        if (y + dy > canvas.height - ballRadius - 10){
+            if (x > paddleX && x < paddleX + paddleWidth){
+                var hitPos = (x - paddleX) / paddleWidth;
+                if (hitPos < 0) hitPos = 0;
+                if (hitPos > 1) hitPos = 1;
+
+                var maxAngle = 5 * Math.PI / 6;
+                var minAngle = Math.PI / 6;
+                var angle = maxAngle - (maxAngle - minAngle) * hitPos;
+
+                dx = speed * Math.cos(angle);
+                dy = -speed * Math.sin(angle);
+
+                updateArrowAtPaddle(hitPos, x);
+
+                usedChances++;
+                if (usedChances > maxChances){
+                    endGame();
+                }
+
+            } else {
+                endGame();
+            }
+        }
+
+        // 패들 이동
+        if (rightPressed) paddleX += paddleSpeed;
+        if (leftPressed) paddleX -= paddleSpeed;
+        if (paddleX < 0) paddleX = 0;
+        if (paddleX > canvas.width - paddleWidth) paddleX = canvas.width - paddleWidth;
+    }
+
+    requestAnimationFrame(draw);
+}
+
+draw();
+</script>
+</body>
+</html>
